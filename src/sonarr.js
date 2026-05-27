@@ -217,11 +217,39 @@ export class SonarrClient {
     );
   }
 
+  async getCalendar(start, end) {
+    let path = "/calendar";
+    const params = [];
+    if (start) params.push(`start=${encodeURIComponent(start)}`);
+    if (end) params.push(`end=${encodeURIComponent(end)}`);
+    if (params.length) path += `?${params.join("&")}`;
+    return this._fetch(path);
+  }
+
+  async getWantedCutoff(pageSize = 50) {
+    return this._fetch(`/wanted/cutoff?pageSize=${pageSize}&sortKey=title&sortDirection=ascending`);
+  }
+
+  async refreshSeries(seriesId) {
+    const body = seriesId
+      ? { name: "RefreshSeries", seriesId }
+      : { name: "RefreshSeries" };
+    return this._fetch("/command", { method: "POST", body: JSON.stringify(body) });
+  }
+
   async getDiskSpace() {
     return this._fetch("/diskspace");
   }
 
   async getSystemStatus() {
     return this._fetch("/system/status");
+  }
+
+  async setSeriesTags(seriesId, tags, mode = "set") {
+    const series = await this.getSeries(seriesId);
+    if (mode === "set") series.tags = tags;
+    else if (mode === "add") series.tags = [...new Set([...(series.tags || []), ...tags])];
+    else if (mode === "remove") series.tags = (series.tags || []).filter((t) => !tags.includes(t));
+    return this.updateSeries(series);
   }
 }

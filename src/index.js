@@ -18,6 +18,28 @@ const sonarr = new SonarrClient(SONARR_URL, SONARR_API_KEY);
 
 const toGb = (bytes) => (bytes ? (bytes / 1073741824).toFixed(2) : "0");
 
+function parseTorrentTags(title) {
+  const t = title.toUpperCase();
+  const tags = [];
+  if (t.includes("REMUX")) tags.push("Remux");
+  if (t.includes("2160P") || t.includes("UHD") || t.includes("4K")) tags.push("4K");
+  else if (t.includes("1080P")) tags.push("1080p");
+  else if (t.includes("720P")) tags.push("720p");
+  if (t.includes("DOVI") || t.includes("DOV") || t.includes("DOLBY.VISION") || t.includes("DOLBYVISION") || /[.\-\s]DV[.\-\s]/.test(t)) tags.push("Dolby Vision");
+  if (t.includes("HDR10+")) tags.push("HDR10+");
+  else if (t.includes("HDR")) tags.push("HDR");
+  if (t.includes("ATMOS")) tags.push("Atmos");
+  else if (t.includes("TRUEHD")) tags.push("TrueHD");
+  else if (t.includes("DTS-HD") || t.includes("DTSHD")) tags.push("DTS-HD");
+  else if (t.includes("DTS")) tags.push("DTS");
+  if (t.includes("HEVC") || t.includes("X265") || t.includes("H.265") || t.includes("H265")) tags.push("HEVC");
+  else if (t.includes("X264") || t.includes("H.264") || t.includes("H264") || t.includes("AVC")) tags.push("AVC");
+  if (t.includes("PLDUB") || t.includes("PL.DUB")) tags.push("PL Dubbing");
+  else if (t.includes("PL.DUAL") || t.includes("PLDUAL") || t.includes("MULTI")) tags.push("PL + Oryginał");
+  else if (/[.\-]PL[.\-]/.test(t)) tags.push("PL");
+  return tags;
+}
+
 const seriesSummary = (s) => ({
   id: s.id,
   tvdbId: s.tvdbId,
@@ -69,10 +91,29 @@ function createServer() {
 
 server.tool(
   "list_series",
-  "List all series in the Sonarr library with id, title, status, seasons, sizes",
-  {},
-  async () => {
-    const series = await sonarr.getAllSeries();
+  "List all series in the Sonarr library. Optional filters: year, downloaded (all episodes have files), genres (comma-separated, case-insensitive).",
+  {
+    year: z.number().int().optional(),
+    downloaded: z.boolean().optional(),
+    genres: z.string().optional().describe("Comma-separated genres, e.g. 'Drama,Crime'"),
+  },
+  async ({ year, downloaded, genres } = {}) => {
+    let series = await sonarr.getAllSeries();
+    if (year !== undefined) series = series.filter((s) => s.year === year);
+    if (downloaded !== undefined) {
+      series = series.filter((s) => {
+        const hasAll =
+          (s.statistics?.episodeFileCount || 0) > 0 &&
+          s.statistics?.episodeFileCount === s.statistics?.totalEpisodeCount;
+        return downloaded ? hasAll : !hasAll;
+      });
+    }
+    if (genres) {
+      const wanted = genres.split(",").map((g) => g.trim().toLowerCase());
+      series = series.filter((s) =>
+        (s.genres || []).some((g) => wanted.includes(g.toLowerCase()))
+      );
+    }
     return ok(series.map(seriesSummary));
   }
 );
@@ -232,17 +273,22 @@ server.tool(
   "Search available releases for one episode. Returns guid, indexerId, quality, size, seeders.",
   { episodeId: z.number().int() },
   async ({ episodeId }) => {
-    const releases = await sonarr.searchEpisodeReleases(episodeId);
+    let releases = [];
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (attempt > 0) await new Promise((r) => setTimeout(r, 5000));
+      releases = await sonarr.searchEpisodeReleases(episodeId);
+      if (releases.length > 0) break;
+    }
     return ok(
       releases.map((r, i) => ({
-        index: i,
+        index: i + 1,
         guid: r.guid,
         indexerId: r.indexerId,
-        title: r.title,
+        indexer: r.indexer,
+        tags: parseTorrentTags(r.title),
         quality: r.quality?.quality?.name,
         sizeGb: toGb(r.size),
-        seeders: r.seeders,
-        leechers: r.leechers,
+        seeders: r.seeders ?? "?",
         protocol: r.protocol,
         rejected: r.rejected,
         rejections: r.rejections,
@@ -260,17 +306,22 @@ server.tool(
     seasonNumber: z.number().int(),
   },
   async ({ seriesId, seasonNumber }) => {
-    const releases = await sonarr.searchSeasonReleases(seriesId, seasonNumber);
+    let releases = [];
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (attempt > 0) await new Promise((r) => setTimeout(r, 5000));
+      releases = await sonarr.searchSeasonReleases(seriesId, seasonNumber);
+      if (releases.length > 0) break;
+    }
     return ok(
       releases.map((r, i) => ({
-        index: i,
+        index: i + 1,
         guid: r.guid,
         indexerId: r.indexerId,
-        title: r.title,
+        indexer: r.indexer,
+        tags: parseTorrentTags(r.title),
         quality: r.quality?.quality?.name,
         sizeGb: toGb(r.size),
-        seeders: r.seeders,
-        leechers: r.leechers,
+        seeders: r.seeders ?? "?",
         protocol: r.protocol,
         rejected: r.rejected,
         rejections: r.rejections,
@@ -286,8 +337,16 @@ server.tool(
   {
     guid: z.string(),
     indexerId: z.number().int(),
+    seriesId: z.number().int().optional(),
   },
-  async ({ guid, indexerId }) => ok(await sonarr.downloadRelease(guid, indexerId))
+  async ({ guid, indexerId, seriesId }) => {
+    const [release, series] = await Promise.all([
+      sonarr.downloadRelease(guid, indexerId),
+      seriesId ? sonarr.getSeries(seriesId).catch(() => null) : Promise.resolve(null),
+    ]);
+    const resolvedSeriesId = seriesId ?? release?.seriesId ?? null;
+    return ok({ ...release, seriesId: resolvedSeriesId, seriesTitle: series?.title ?? null });
+  }
 );
 
 server.tool(
@@ -371,6 +430,39 @@ server.tool(
       })),
     });
   }
+);
+
+server.tool(
+  "get_calendar",
+  "Get upcoming episode air dates scheduled in Sonarr. Optionally filter by date range (ISO 8601).",
+  {
+    start: z.string().optional().describe("Start date, e.g. 2025-05-26"),
+    end: z.string().optional().describe("End date, e.g. 2025-06-26"),
+  },
+  async ({ start, end } = {}) => {
+    const episodes = await sonarr.getCalendar(start, end);
+    return ok(episodes.map(episodeSummary));
+  }
+);
+
+server.tool(
+  "get_wanted_cutoff",
+  "List episodes that have a file but don't meet the quality cutoff (upgrade candidates)",
+  { pageSize: z.number().int().optional().default(50) },
+  async ({ pageSize }) => {
+    const result = await sonarr.getWantedCutoff(pageSize);
+    return ok({
+      total: result.totalRecords,
+      records: (result.records || []).map(episodeSummary),
+    });
+  }
+);
+
+server.tool(
+  "refresh_series",
+  "Force a metadata refresh for a series (or all series if no id given)",
+  { seriesId: z.number().int().optional() },
+  async ({ seriesId } = {}) => ok(await sonarr.refreshSeries(seriesId))
 );
 
 server.tool(
@@ -476,6 +568,17 @@ server.tool(
       topGenres,
     });
   }
+);
+
+server.tool(
+  "set_series_tags",
+  "Set, add or remove tags on a series. mode: 'set' replaces all tags, 'add' appends, 'remove' removes. Use get_tags to find tag ids.",
+  {
+    seriesId: z.number().int(),
+    tags: z.array(z.number().int()).describe("Tag ids from get_tags"),
+    mode: z.enum(["set", "add", "remove"]).optional().default("set"),
+  },
+  async ({ seriesId, tags, mode }) => ok(await sonarr.setSeriesTags(seriesId, tags, mode))
 );
 
   return server;
