@@ -25,7 +25,7 @@ Claude Desktop doesn't load `~/.claude/skills/` directly. Two options:
 
 - Adding a movie / series end-to-end (lookup → profile → folder → add → search → download → upgrade profile → monitor)
 - Smart quality profile selection from release tags (Remux/4K/1080p/etc.)
-- Folder routing (kids content → Bajki/Kids folder, otherwise → Movies)
+- Folder routing (kids content → Kids folder, otherwise → Movies)
 - Confirmation block format
 - Empty-result handling
 - Library query patterns (queue, missing, disk space, duplicates)
@@ -34,8 +34,9 @@ Claude Desktop doesn't load `~/.claude/skills/` directly. Two options:
 ## Customise
 
 The defaults in `SKILL.md` assume:
-- Polish-language responses
 - Quality profiles named like `4K REMUX`, `Ultra-HD`, `HD-1080p`
-- Root folders named `Movies` / `Filmy` and `Bajki` / `Kids`
+- Root folders named `Movies` and `Kids`
+
+If you want responses in a non-English language, add a line like `Respond in Polish.` near the top of the SKILL body.
 
 Edit the file to match your Radarr/Sonarr setup. Skills are plain markdown — no build step.
